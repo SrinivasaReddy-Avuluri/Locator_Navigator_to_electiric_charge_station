@@ -36,23 +36,39 @@ function enableLocation() {
     }
 }
 
-// Fetch nearby charging stations (mock data for now)
+// Fetch nearby charging stations using OpenStreetMap Nominatim API
 function fetchNearbyStations(location) {
-    const stations = [
-        { name: "Station 1", lat: location.lat + 0.01, lng: location.lng + 0.01, address: "Address 1" },
-        { name: "Station 2", lat: location.lat + 0.02, lng: location.lng - 0.01, address: "Address 2" },
-        { name: "Station 3", lat: location.lat - 0.01, lng: location.lng + 0.02, address: "Address 3" },
-        { name: "Station 4", lat: location.lat - 0.02, lng: location.lng - 0.02, address: "Address 4" },
-        { name: "Station 5", lat: location.lat + 0.03, lng: location.lng + 0.03, address: "Address 5" }
-    ];
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=charging+station&limit=5&lat=${location.lat}&lon=${location.lng}`;
 
-    displayStations(stations);
+    fetch(url)
+        .then((response) => response.json())
+        .then((data) => {
+            if (data.length > 0) {
+                const stations = data.map((station) => ({
+                    name: station.display_name.split(",")[0],
+                    lat: parseFloat(station.lat),
+                    lng: parseFloat(station.lon),
+                    address: station.display_name,
+                }));
+                displayStations(stations);
+            } else {
+                alert("No nearby charging stations found.");
+            }
+        })
+        .catch((error) => {
+            console.error("Error fetching stations:", error);
+            alert("Unable to fetch nearby stations.");
+        });
 }
 
 // Display stations on the map and in the sidebar
 function displayStations(stations) {
     const stationsList = document.getElementById("stations-list");
     stationsList.innerHTML = ""; // Clear previous list
+
+    // Remove existing markers from the map
+    markers.forEach(marker => map.removeLayer(marker));
+    markers = [];
 
     stations.forEach((station, index) => {
         const marker = L.marker([station.lat, station.lng]).addTo(map)
@@ -73,7 +89,6 @@ function displayStations(stations) {
         });
         stationsList.appendChild(stationElement);
 
-        // Automatically show details for the first station
         if (index === 0) {
             showStationDetails(station);
         }
@@ -92,37 +107,71 @@ function showStationDetails(station) {
 
 // Navigate to a station using OpenRouteService API
 function navigateToStation(lat, lng) {
-    if (navigator.geolocation) {
+    const fromLocation = document.getElementById("location-search").value;
+
+    if (fromLocation) {
+        // Prioritize the user-provided "From Location"
+        const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(fromLocation)}`;
+
+        fetch(url)
+            .then((response) => response.json())
+            .then((data) => {
+                if (data.length > 0) {
+                    const { lat: fromLat, lon: fromLng } = data[0];
+                    calculateRoute(fromLat, fromLng, lat, lng);
+                } else {
+                    alert("From location not found. Please try again.");
+                }
+            })
+            .catch((error) => {
+                console.error("Error fetching from location:", error);
+                alert("An error occurred while searching for the from location.");
+            });
+    } else if (navigator.geolocation) {
+        // Use the user's current location if no "From Location" is provided
         navigator.geolocation.getCurrentPosition((position) => {
             const userLocation = {
                 lat: position.coords.latitude,
                 lng: position.coords.longitude,
             };
-
-            const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=YOUR_OPENROUTESERVICE_API_KEY&start=${userLocation.lng},${userLocation.lat}&end=${lng},${lat}`;
-
-            fetch(url)
-                .then((response) => response.json())
-                .then((data) => {
-                    if (routeLayer) {
-                        map.removeLayer(routeLayer);
-                    }
-
-                    const coordinates = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
-                    routeLayer = L.polyline(coordinates, { color: 'blue' }).addTo(map);
-                    map.fitBounds(routeLayer.getBounds());
-                })
-                .catch((error) => {
-                    console.error("Error fetching route:", error);
-                    alert("Unable to calculate route.");
-                });
+            calculateRoute(userLocation.lat, userLocation.lng, lat, lng);
         });
     } else {
-        alert("Geolocation is not supported by your browser.");
+        alert("Please enter a location or enable geolocation.");
     }
 }
 
-// Search for a location using Nominatim API
+// Calculate and display the route using OpenRouteService API
+function calculateRoute(fromLat, fromLng, toLat, toLng) {
+    const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=YOUR_OPENROUTESERVICE_API_KEY&start=${fromLng},${fromLat}&end=${toLng},${toLat}`;
+
+    fetch(url)
+        .then((response) => response.json())
+        .then((data) => {
+            if (routeLayer) {
+                map.removeLayer(routeLayer);
+            }
+
+            const coordinates = data.features[0].geometry.coordinates.map(coord => [coord[1], coord[0]]);
+            routeLayer = L.polyline(coordinates, { color: 'blue' }).addTo(map);
+            map.fitBounds(routeLayer.getBounds());
+
+            const distance = data.features[0].properties.segments[0].distance / 1000; // in km
+            const duration = data.features[0].properties.segments[0].duration / 60; // in minutes
+
+            const routeDetails = document.getElementById("route-details");
+            routeDetails.innerHTML = `
+                <div><strong>Distance:</strong> ${distance.toFixed(2)} km</div>
+                <div><strong>Duration:</strong> ${duration.toFixed(2)} minutes</div>
+            `;
+        })
+        .catch((error) => {
+            console.error("Error fetching route:", error);
+            alert("Unable to calculate route.");
+        });
+}
+
+// Handle location search
 document.getElementById("search-btn").addEventListener("click", () => {
     const location = document.getElementById("location-search").value;
     if (location) {
